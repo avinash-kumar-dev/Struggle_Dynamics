@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Environment / secrets
+.env
+*.env
+
+# Test output / results
+test_results*/
+test_results_sd*/
+full_pipeline_batch_results*/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc docs / zips not part of module
+*.zip
+*.pdf
+*.docx
+*.json.bak
