@@ -1,11 +1,18 @@
 """
-Struggle Dynamics controller — generates 6 segments (3 high-struggle + 3 peripheral).
+Struggle Dynamics controller — generates segments and market sizings.
+
+Public API
+----------
+generate_struggle_dynamics_segments(...)  -> (StruggleDynamicsList, metrics)
+generate_market_sizings(...)              -> (list[EnhancedMarketSizing | None], metrics)
+market_sizings_to_dicts(...)              -> list[dict]
 """
 import json
+import asyncio
 from datetime import datetime
-from typing import Union, Dict
+from typing import Union, Dict, List, Any, Optional, Tuple
 
-from output_formats import StruggleDynamicsList
+from output_formats import StruggleDynamicsList, EnhancedMarketSizing
 from llm_call import get_ai_response
 import prompts
 
@@ -139,3 +146,109 @@ def generate_struggle_dynamics_segments(
         print("❌ Failed to generate struggle dynamics segments")
 
     return result, metrics
+
+
+# ============================================================================
+# MARKET SIZING
+# ============================================================================
+
+def generate_market_sizings(
+    segments: List[Dict[str, Any]],
+    jtbd: Any,
+    idea: Any,
+    location: str,
+    max_segments: int = 3,
+) -> Tuple[List[Optional[EnhancedMarketSizing]], Dict[str, Any]]:
+    """
+    Generate market sizing for the top N segments (default: first 3 = high-struggle).
+
+    Args:
+        segments:     List of corrected StruggleDynamicsSegment dicts.
+        jtbd:         JTBD context — dict or JSON string.
+        idea:         Idea context — dict or JSON string.
+        location:     Geographic location string (e.g. 'India', 'US').
+        max_segments: How many segments to size (default 3).
+
+    Returns:
+        Tuple of:
+          - list of EnhancedMarketSizing objects (or None for failed calls)
+          - aggregated metrics dict
+    """
+    from llm_call import batch_ai_responses
+
+    jtbd_str = json.dumps(jtbd) if isinstance(jtbd, dict) else (jtbd or "")
+    idea_str = json.dumps(idea) if isinstance(idea, dict) else (idea or "")
+    current_date = datetime.now().strftime("%B %d, %Y")
+
+    target_segments = segments[:max_segments]
+
+    print("\n" + "=" * 80)
+    print(f"MARKET SIZING: Generating for {len(target_segments)} segments")
+    print("=" * 80)
+
+    prompts_list: List[str] = []
+    for seg in target_segments:
+        p = prompts.MARKET_SIZING_PROMPT_XML.format(
+            jtbd=jtbd_str,
+            idea=idea_str,
+            segment_name=seg.get("segment_name", ""),
+            segment_description=seg.get("description", ""),
+            location=location,
+            current_date=current_date,
+        )
+        prompts_list.append(p)
+
+    results, metrics = asyncio.run(
+        batch_ai_responses(
+            prompts=prompts_list,
+            output_format=EnhancedMarketSizing,
+            grounding=True,
+            thinking_level="medium",
+        )
+    )
+
+    print(f"\n\u2705  Market sizing complete for {len(results)} segments")
+    return results, metrics
+
+
+def market_sizings_to_dicts(
+    results: List[Optional[EnhancedMarketSizing]],
+    individual_metrics: Optional[List[Dict]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Serialise EnhancedMarketSizing objects to plain dicts.
+    Attaches per-segment grounding metadata when available.
+
+    Args:
+        results:            List of EnhancedMarketSizing (or None for failures).
+        individual_metrics: Per-call metrics from batch_ai_responses (optional).
+
+    Returns:
+        List of dicts (failed calls produce None entries).
+    """
+    dicts: List[Any] = []
+    metrics_list = individual_metrics or []
+
+    for i, result in enumerate(results):
+        if result is None:
+            dicts.append(None)
+            continue
+
+        d = json.loads(result.model_dump_json())
+
+        # Attach grounding sources if available from per-call metrics
+        if i < len(metrics_list):
+            m = metrics_list[i]
+            grounding_sources = m.get("grounding_sources", [])
+            search_queries    = m.get("search_queries", [])
+            if grounding_sources:
+                d["api_grounding_sources"] = grounding_sources
+            if search_queries:
+                d.setdefault("data_sources", [])
+                for q in search_queries:
+                    if q not in d["data_sources"]:
+                        d["data_sources"].append(q)
+
+        dicts.append(d)
+
+    return dicts

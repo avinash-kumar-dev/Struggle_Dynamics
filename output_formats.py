@@ -116,3 +116,130 @@ class SDVerificationSummary(BaseModel):
     high_quality_segments: int
     medium_quality_segments: int
     low_quality_segments: int
+
+
+# ============================================================================
+# MARKET SIZING GENERATION MODELS
+# ============================================================================
+
+class StruggleAwarePopulation(BaseModel):
+    """Struggle-aware population data with sources"""
+    total_population: int = Field(description="Total addressable population in location")
+    population_source: str = Field(description="Source for population data (report name + year)")
+    population_source_urls: List[str] = Field(default_factory=list, description="Direct URLs for the population source (e.g. census page, report URL)")
+    prevalence_rate: float = Field(description="Decimal: what % actually experience this struggle", ge=0, le=1)
+    prevalence_source: str = Field(description="Source for prevalence rate (report name + year)")
+    prevalence_source_urls: List[str] = Field(default_factory=list, description="Direct URLs for the prevalence/struggle rate source")
+    struggle_aware_count: int = Field(description="Calculated: those who actually feel the pain")
+    calculation_logic: str = Field(description="Explanation of filtering logic")
+    confidence: str = Field(description="High, Medium, or Low based on source quality")
+
+
+class ComparableSolution(BaseModel):
+    """A real competitor solution with pricing"""
+    solution_name: str = Field(description="Name of comparable solution")
+    price: str = Field(description="Annual/monthly price")
+    source: str = Field(description="Citation for pricing (report name or URL)")
+    source_url: str = Field(default="", description="Direct URL to the pricing page or source (e.g. https://competitor.com/pricing)")
+
+
+class EnhancedPricingScenario(BaseModel):
+    """Pricing scenario with real market data and sources"""
+    tier: str = Field(description="Low / Volume, Mid / SaaS, or High / Premium")
+    annual_price: int = Field(description="Annual price in USD")
+    local_price: str = Field(description="Price in local currency if different (e.g., '₹4,000')")
+    pricing_rationale: str = Field(description="4-6 sentences explaining price with market benchmark citations")
+    pricing_source_urls: List[str] = Field(default_factory=list, description="URLs backing the pricing rationale (industry reports, surveys, market data)")
+    comparable_solutions: List[ComparableSolution] = Field(description="2-3 real competitors with prices")
+    sam_revenue: int = Field(description="struggle_aware_count × annual_price")
+    capture_rate: str = Field(description="Realistic Year 1 capture rate (e.g., '2%')")
+    som_year_1: int = Field(description="Calculated SOM for Year 1")
+    som_reasoning: str = Field(description="Why this capture rate is realistic")
+
+
+class EnhancedMarketSizing(BaseModel):
+    """Complete market sizing with struggle-aware counts and source-backed pricing"""
+    segment_name: str = Field(description="Name of the segment being analyzed")
+    location: str = Field(description="Geographic location (e.g., 'India', 'US', 'UK')")
+    struggle_aware_population: StruggleAwarePopulation = Field(description="Struggle-aware population data")
+    pricing_scenarios: List[EnhancedPricingScenario] = Field(
+        description="3 pricing scenarios with sources",
+        min_length=3,
+        max_length=3
+    )
+    recommended_scenario: str = Field(description="Low, Mid, or High")
+    recommendation_reasoning: str = Field(description="Why this pricing tier fits best")
+    data_sources: List[str] = Field(description="All sources used (URLs, report names, etc.)")
+    api_grounding_sources: List[str] = Field(
+        default_factory=list,
+        description="URLs from Google Search grounding (extracted from API metadata)"
+    )
+
+
+# ============================================================================
+# MARKET SIZING VERIFICATION MODELS
+# ============================================================================
+
+class MarketFieldVerificationResult(BaseModel):
+    """Verification result for a single market sizing field"""
+    field_name: str
+    pricing_tier: Optional[str] = None
+    claimed_value: str
+    source: str
+    source_urls: List[str] = Field(default_factory=list)          # URLs claimed in raw generation
+    verified_value: str
+    confidence_score: int  # 0-100
+    verification_status: str  # 'verified', 'corrected', 'unable_to_verify'
+    discrepancies: List[str] = Field(default_factory=list)
+    correction_needed: bool
+    corrected_value: str = ""
+    verification_sources_claimed: List[str] = Field(default_factory=list)
+    verified_source_urls: List[str] = Field(default_factory=list)  # URLs that confirm/correct claimed URLs
+    verification_sources: List[str] = Field(default_factory=list)
+
+
+class MarketSizingVerificationResult(BaseModel):
+    """Complete verification result for one segment's market sizing"""
+    segment_name: str
+    location: str
+    field_results: List[MarketFieldVerificationResult]
+    overall_quality: str  # 'high', 'medium', 'low'
+    average_confidence: float
+    fields_verified: int
+    fields_corrected: int
+    fields_unable_to_verify: int
+    search_queries_used: List[str] = Field(default_factory=list)
+    grounding_chunks_used: List[Dict[str, Any]] = Field(default_factory=list)
+    token_metrics: Dict[str, int] = Field(default_factory=dict)
+    verification_timestamp: str
+
+
+class MarketVerificationSummary(BaseModel):
+    """Aggregate statistics across all market sizing verifications"""
+    total_segments_verified: int
+    total_fields_verified: int
+    verified_accurate: int
+    verified_corrected: int
+    unable_to_verify: int
+    average_confidence: float
+    high_quality_segments: int
+    medium_quality_segments: int
+    low_quality_segments: int
+
+
+class FieldVerificationData(BaseModel):
+    """Single field verification result returned by the LLM"""
+    field_name: str = Field(description="Name of the field being verified (e.g., 'total_population', 'prevalence_rate', 'pricing_tier_1')")
+    pricing_tier: Optional[str] = Field(default=None, description="Pricing tier name if this is pricing data")
+    verified_value: str = Field(description="The verified value found through research, or 'Unable to verify' if not found")
+    confidence_score: int = Field(description="Confidence in verification from 0-100")
+    discrepancies: List[str] = Field(default_factory=list, description="List of discrepancies found between claimed and verified values")
+    correction_needed: bool = Field(description="Whether the claimed value needs correction")
+    corrected_value: str = Field(default="", description="Corrected value if correction_needed is true")
+    verification_sources: List[str] = Field(default_factory=list, description="URLs used to verify this field")
+    verified_source_urls: List[str] = Field(default_factory=list, description="Direct URLs that confirm or correct the source URLs originally cited in the generation output")
+
+
+class MarketVerificationLLMOutput(BaseModel):
+    """LLM output model for market sizing verification"""
+    fields: List[FieldVerificationData] = Field(description="Verification results for each field in the market sizing data")

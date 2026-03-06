@@ -1,7 +1,11 @@
 """
-Test the Struggle Dynamics segment generation pipeline.
-Uses STRUGGLE_DYNAMICS_SEGMENT_PROMPT (6 segments: 3 high-struggle + 3 peripheral)
-followed by verification via struggle_dynamics_verification.py.
+Test the full Struggle Dynamics pipeline (all 4 steps):
+  1. SD Segment Generation (6 segments)
+  2. SD Segment Verification (3 high-struggle)
+  3. Market Sizing Generation (3 segments, 3 pricing tiers each)
+  4. Market Sizing Verification
+
+All imports are from the struggle_dynamics/ module — no root-level dependencies.
 
 Usage:
   python test_struggle_dynamics.py --test 1
@@ -19,9 +23,14 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from controller import generate_struggle_dynamics_segments
+from controller import (
+    generate_struggle_dynamics_segments,
+    generate_market_sizings,
+    market_sizings_to_dicts,
+)
 from output_formats import StruggleDynamicsList, StruggleDynamicsSegment
 from struggle_dynamics_verification import verify_all_sd_segments
+from market_sizing_verification import verify_all_market_sizings
 from helpers import save_to_json
 
 # ============================================================================
@@ -189,8 +198,10 @@ test_dir.mkdir(parents=True, exist_ok=True)
 
 pipeline_start = time.time()
 pipeline_metrics: dict = {
-    "generation": {},
-    "verification": {},
+    "generation":            {},
+    "verification":          {},
+    "market_sizing":         {},
+    "market_verification":   {},
 }
 
 print("=" * 80)
@@ -371,6 +382,131 @@ print(f"💾 Corrected segments saved to: {corrected_file}")
 print(f"   → Use this file for production (same schema, verified data)")
 
 # ============================================================================
+# STEP 3: MARKET SIZING GENERATION (top 3 high-struggle segments)
+# ============================================================================
+print(f"\n{'='*80}")
+print("STEP 3: MARKET SIZING — 3 SEGMENTS × 3 PRICING TIERS")
+print("=" * 80)
+
+idea_for_market = {
+    "problem":     td["confirmed_struggle"],
+    "solution":    td["confirmed_solution"],
+    "target_user": td["confirmed_user"],
+}
+
+corrected_high_struggle = verification_result["corrected_segments"]  # already top 3
+
+step_start = time.time()
+ms_results, ms_raw_metrics = generate_market_sizings(
+    segments=corrected_high_struggle,
+    jtbd=td["selected_signal"],
+    idea=idea_for_market,
+    location=td["target_location"],
+    max_segments=3,
+)
+ms_duration = time.time() - step_start
+
+# Normalise batch metrics (batch_ai_responses uses total_input_tokens, etc.)
+pipeline_metrics["market_sizing"] = {
+    "duration_seconds": ms_duration,
+    "total_tokens":     ms_raw_metrics.get("total_tokens", 0),
+    "input_tokens":     ms_raw_metrics.get("total_input_tokens",   ms_raw_metrics.get("input_tokens", 0)),
+    "output_tokens":    ms_raw_metrics.get("total_output_tokens",  ms_raw_metrics.get("output_tokens", 0)),
+    "thinking_tokens":  ms_raw_metrics.get("total_thinking_tokens",ms_raw_metrics.get("thinking_tokens", 0)),
+    "cached_tokens":    ms_raw_metrics.get("total_cached_tokens",  ms_raw_metrics.get("cached_tokens", 0)),
+    "search_queries":   len(ms_raw_metrics.get("search_queries", [])),
+    "grounding_chunks": len(ms_raw_metrics.get("grounding_chunks", [])),
+    "segments_sized":   len([r for r in ms_results if r is not None]),
+}
+
+individual_ms_metrics = ms_raw_metrics.get("individual_metrics", [])
+market_sizing_dicts = market_sizings_to_dicts(ms_results, individual_ms_metrics)
+
+print(f"\n✅ Market sizing complete:")
+for ms in market_sizing_dicts:
+    if not ms:
+        continue
+    seg_name = ms.get("segment_name", "Unknown")
+    pop      = ms.get("struggle_aware_population", {})
+    count    = pop.get("struggle_aware_count", 0)
+    conf     = pop.get("confidence", "?")
+    rec      = ms.get("recommended_scenario", "?")
+    tiers    = ms.get("pricing_scenarios", [])
+    prices   = [f"{t.get('tier','?')} ${t.get('annual_price',0):,}" for t in tiers]
+    print(f"   📊 {seg_name}")
+    print(f"      Struggle-Aware Count: {count:,} ({conf} confidence)")
+    print(f"      Pricing Tiers:        {' | '.join(prices)}")
+    print(f"      Recommended:          {rec}")
+
+ms_raw_file = test_dir / "market_sizing_raw.json"
+save_to_json(
+    {
+        "test_info": {"test_name": TEST_NAME, "timestamp": timestamp, "test_directory": str(test_dir)},
+        "market_sizings": [ms for ms in market_sizing_dicts if ms],
+        "total_segments": len([ms for ms in market_sizing_dicts if ms]),
+    },
+    ms_raw_file,
+)
+print(f"\n💾 Market sizing raw saved to: {ms_raw_file}")
+
+# ============================================================================
+# STEP 4: MARKET SIZING VERIFICATION
+# ============================================================================
+print(f"\n{'='*80}")
+print("STEP 4: MARKET SIZING VERIFICATION")
+print("=" * 80)
+
+valid_sizings = [ms for ms in market_sizing_dicts if ms]
+
+step_start = time.time()
+mv_result = verify_all_market_sizings(
+    market_sizings=valid_sizings,
+    jtbd=td["selected_signal"],
+    idea=idea_for_market,
+    batch_size=3,
+)
+mv_duration = time.time() - step_start
+mv_metrics  = mv_result.get("metrics", {})
+
+pipeline_metrics["market_verification"] = {
+    "duration_seconds": mv_duration,
+    "total_tokens":     mv_metrics.get("total_tokens", 0),
+    "input_tokens":     mv_metrics.get("input_tokens", 0),
+    "output_tokens":    mv_metrics.get("output_tokens", 0),
+    "thinking_tokens":  mv_metrics.get("thinking_tokens", 0),
+    "cached_tokens":    mv_metrics.get("cached_tokens", 0),
+    "search_queries":   mv_metrics.get("total_search_queries", 0),
+    "grounding_chunks": mv_metrics.get("total_grounding_chunks", 0),
+    "segments_verified": len(mv_result.get("verification_results", [])),
+}
+
+mv_summary = mv_result["summary"]
+print(f"\n📊 Market Verification Summary:")
+print(f"   Segments Verified:   {mv_summary.total_segments_verified}")
+print(f"   Total Fields:        {mv_summary.total_fields_verified}")
+print(f"   ✓  Accurate:         {mv_summary.verified_accurate}")
+print(f"   ✏️   Corrected:       {mv_summary.verified_corrected}")
+print(f"   ❌ Unable to Verify: {mv_summary.unable_to_verify}")
+print(f"   Avg Confidence:      {mv_summary.average_confidence:.1f}%")
+print(f"   🟢 High:  {mv_summary.high_quality_segments}  "
+      f"🟡 Medium: {mv_summary.medium_quality_segments}  "
+      f"🔴 Low: {mv_summary.low_quality_segments}")
+
+mv_verified_file = test_dir / "market_sizing_verified.json"
+save_to_json(
+    {
+        "test_info": {"test_name": TEST_NAME, "timestamp": timestamp, "test_directory": str(test_dir)},
+        "verification_summary": mv_summary.model_dump(),
+        "corrected_market_sizings": mv_result["corrected_market_sizings"],
+        "verification_results": [
+            r.model_dump() for r in mv_result["verification_results"]
+        ],
+    },
+    mv_verified_file,
+)
+print(f"\n💾 Market sizing verified saved to: {mv_verified_file}")
+
+# ============================================================================
 # PIPELINE METRICS SUMMARY
 # ============================================================================
 pipeline_end = time.time()
@@ -387,32 +523,36 @@ print("📊 COMPLETE PIPELINE METRICS")
 print("=" * 80)
 
 print(f"\n⏱️  TIMING:")
-print(f"   1️⃣  Segment Generation: {pipeline_metrics['generation']['duration_seconds']:.1f}s")
-print(f"   2️⃣  Segment Verification: {pipeline_metrics['verification']['duration_seconds']:.1f}s")
+print(f"   1️⃣  Segment Generation:      {pipeline_metrics['generation']['duration_seconds']:.1f}s")
+print(f"   2️⃣  Segment Verification:    {pipeline_metrics['verification']['duration_seconds']:.1f}s")
+print(f"   3️⃣  Market Sizing:           {pipeline_metrics['market_sizing']['duration_seconds']:.1f}s")
+print(f"   4️⃣  Market Verification:     {pipeline_metrics['market_verification']['duration_seconds']:.1f}s")
 print(f"   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 print(f"   📍 TOTAL: {total_duration:.1f}s ({total_duration/60:.1f} min)")
 
 print(f"\n🪙  TOKEN USAGE:")
-print(f"   1️⃣  Generation:")
-print(f"      Total: {pipeline_metrics['generation']['total_tokens']:,}")
-print(f"      ├─ Input:   {pipeline_metrics['generation']['input_tokens']:,}")
-print(f"      ├─ Output:  {pipeline_metrics['generation']['output_tokens']:,}")
-print(f"      ├─ Thinking:{pipeline_metrics['generation']['thinking_tokens']:,}")
-print(f"      └─ Cached:  {pipeline_metrics['generation']['cached_tokens']:,}")
-print(f"   2️⃣  Verification ({pipeline_metrics['verification']['segments_verified']} segments):")
-print(f"      Total: {pipeline_metrics['verification']['total_tokens']:,}")
-print(f"      ├─ Input:   {pipeline_metrics['verification']['input_tokens']:,}")
-print(f"      ├─ Output:  {pipeline_metrics['verification']['output_tokens']:,}")
-print(f"      ├─ Thinking:{pipeline_metrics['verification']['thinking_tokens']:,}")
-print(f"      └─ Cached:  {pipeline_metrics['verification']['cached_tokens']:,}")
-print(f"      🔍 Searches: {pipeline_metrics['verification']['search_queries']}")
-print(f"      📚 Chunks:   {pipeline_metrics['verification']['grounding_chunks']}")
+for step_num, (step_key, step_label) in enumerate([
+    ("generation",          "Generation"),
+    ("verification",        "SD Verification"),
+    ("market_sizing",       "Market Sizing"),
+    ("market_verification", "Market Verification"),
+], 1):
+    m = pipeline_metrics[step_key]
+    print(f"   {step_num}️⃣  {step_label}:")
+    print(f"      Total: {m.get('total_tokens', 0):,}")
+    print(f"      ├─ Input:    {m.get('input_tokens', 0):,}")
+    print(f"      ├─ Output:   {m.get('output_tokens', 0):,}")
+    print(f"      ├─ Thinking: {m.get('thinking_tokens', 0):,}")
+    print(f"      └─ Cached:   {m.get('cached_tokens', 0):,}")
+    if m.get('search_queries', 0):
+        print(f"      🔍 Searches: {m.get('search_queries', 0)}")
+
 print(f"\n   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 print(f"   📍 TOTAL TOKENS: {total_tokens:,}")
-print(f"      ├─ Input:   {total_input:,}")
-print(f"      ├─ Output:  {total_output:,}")
-print(f"      ├─ Thinking:{total_thinking:,}")
-print(f"      └─ Cached:  {total_cached:,}")
+print(f"      ├─ Input:    {total_input:,}")
+print(f"      ├─ Output:   {total_output:,}")
+print(f"      ├─ Thinking: {total_thinking:,}")
+print(f"      └─ Cached:   {total_cached:,}")
 
 # Save pipeline metrics
 metrics_output = {
@@ -421,19 +561,13 @@ metrics_output = {
     "total_pipeline_duration_minutes": total_duration / 60,
     "step_metrics": pipeline_metrics,
     "totals": {
-        "total_tokens": total_tokens,
-        "input_tokens": total_input,
-        "output_tokens": total_output,
+        "total_tokens":    total_tokens,
+        "input_tokens":    total_input,
+        "output_tokens":   total_output,
         "thinking_tokens": total_thinking,
-        "cached_tokens": total_cached,
-        "search_queries": (
-            pipeline_metrics["generation"]["search_queries"]
-            + pipeline_metrics["verification"]["search_queries"]
-        ),
-        "grounding_chunks": (
-            pipeline_metrics["generation"]["grounding_chunks"]
-            + pipeline_metrics["verification"]["grounding_chunks"]
-        ),
+        "cached_tokens":   total_cached,
+        "search_queries":  sum(s.get("search_queries", 0) for s in pipeline_metrics.values()),
+        "grounding_chunks": sum(s.get("grounding_chunks", 0) for s in pipeline_metrics.values()),
     },
 }
 metrics_file = test_dir / "pipeline_metrics.json"
@@ -441,5 +575,8 @@ save_to_json(metrics_output, metrics_file)
 print(f"\n💾 Pipeline metrics saved to: {metrics_file}")
 
 print(f"\n✅ All results saved to: {test_dir}/")
-print(f"   • segments.json           — Raw generated segments (6 total)")
-print(f"   • segments_corrected.json — Verified segments (use for production)")
+print(f"   • segments.json              — Raw generated segments (6 total)")
+print(f"   • segments_corrected.json    — Verified SD segments (use for market sizing)")
+print(f"   • market_sizing_raw.json     — Raw market sizing (3 segments × 3 tiers)")
+print(f"   • market_sizing_verified.json — Corrected market sizing (use for production)")
+print(f"   • pipeline_metrics.json      — Full 4-step metrics")
