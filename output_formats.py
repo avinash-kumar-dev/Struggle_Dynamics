@@ -40,6 +40,7 @@ class AdvancedTrendAnalysis(BaseModel):
 
 class StruggleDynamicsSegment(BaseModel):
     """A single segment from the Struggle Dynamics phase (new 6-segment schema)"""
+    id: str = Field(description="Unique identifier for this segment (e.g., '1', '2', '3', ...)")
     validation_tier: str = Field(description="'high-struggle' (top 3) or 'peripheral' (bottom 3)")
     acuteness_rationale: str = Field(description="Why this segment was ranked high-struggle or peripheral based purely on pain intensity and hard data")
     segment_name: str = Field(description="Short, memorable name (3-5 words)")
@@ -64,55 +65,31 @@ class StruggleDynamicsList(BaseModel):
     )
     total_segments: int = Field(default=6, description="Always 6")
     generation_notes: str = Field(default="", description="Notes on segmentation approach")
+    ai_response: str = Field(..., description="The AI assistant's conversational response about struggle dynamics")
 
 
 # ============================================================================
 # STRUGGLE DYNAMICS VERIFICATION MODELS
 # ============================================================================
 
-class FieldVerificationResult(BaseModel):
-    """Verification result for a single field within a segment"""
-    field_name: str
-    claimed_value: str
-    source_urls: List[str]
+class SDFieldVerification(BaseModel):
+    """Single field verification result returned by the LLM for SD segments"""
     verified_value: str
-    confidence_score: int  # 0-100
-    verification_status: str  # 'verified', 'corrected', 'unable_to_verify'
+    confidence_score: int
     discrepancies: List[str] = Field(default_factory=list)
     correction_needed: bool
     corrected_value: str = ""
-    verification_sources_claimed: List[str] = Field(default_factory=list)
     verification_sources: List[str] = Field(default_factory=list)
 
 
-class SDSegmentVerificationResult(BaseModel):
-    """Verification result for one Struggle Dynamics segment (all fields)"""
-    segment_name: str
-    validation_tier: str  # 'high-struggle' or 'peripheral'
-    field_results: List[FieldVerificationResult]
-    overall_segment_quality: str  # 'high', 'medium', 'low'
-    segment_confidence_avg: float
-    fields_verified: int
-    fields_corrected: int
-    fields_unable_to_verify: int
-    acuteness_rationale_original: str = ""
-    acuteness_rationale_updated: str = ""
-    verification_timestamp: str
-
-
-class SDVerificationSummary(BaseModel):
-    """Aggregate statistics across all Struggle Dynamics segment verifications"""
-    total_segments_verified: int
-    total_fields_verified: int
-    verified_accurate: int
-    verified_corrected: int
-    unable_to_verify: int
-    average_confidence: float
-    high_struggle_segments: int
-    peripheral_segments: int
-    high_quality_segments: int
-    medium_quality_segments: int
-    low_quality_segments: int
+class SDVerificationResponse(BaseModel):
+    """LLM output model for SD segment verification"""
+    behavioral_evidence: SDFieldVerification
+    pain_intensity: SDFieldVerification
+    current_solutions: SDFieldVerification
+    segment_accessibility: SDFieldVerification
+    updated_acuteness_rationale: str
+    ai_response: str = Field(default="", description="The AI assistant's conversational response about segment verification")
 
 
 # ============================================================================
@@ -171,55 +148,12 @@ class EnhancedMarketSizing(BaseModel):
         default_factory=list,
         description="URLs from Google Search grounding (extracted from API metadata)"
     )
+    ai_response: str = Field(..., description="The AI assistant's conversational response about market sizing")
 
 
 # ============================================================================
 # MARKET SIZING VERIFICATION MODELS
 # ============================================================================
-
-class MarketFieldVerificationResult(BaseModel):
-    """Verification result for a single market sizing field"""
-    field_name: str
-    pricing_tier: Optional[str] = None
-    claimed_value: str
-    source: str
-    source_urls: List[str] = Field(default_factory=list)          # URLs claimed in raw generation
-    verified_value: str
-    confidence_score: int  # 0-100
-    verification_status: str  # 'verified', 'corrected', 'unable_to_verify'
-    discrepancies: List[str] = Field(default_factory=list)
-    correction_needed: bool
-    corrected_value: str = ""
-    verification_sources_claimed: List[str] = Field(default_factory=list)
-    verified_source_urls: List[str] = Field(default_factory=list)  # URLs that confirm/correct claimed URLs
-    verification_sources: List[str] = Field(default_factory=list)
-
-
-class MarketSizingVerificationResult(BaseModel):
-    """Complete verification result for one segment's market sizing"""
-    segment_name: str
-    location: str
-    field_results: List[MarketFieldVerificationResult]
-    overall_quality: str  # 'high', 'medium', 'low'
-    average_confidence: float
-    fields_verified: int
-    fields_corrected: int
-    fields_unable_to_verify: int
-    verification_timestamp: str
-
-
-class MarketVerificationSummary(BaseModel):
-    """Aggregate statistics across all market sizing verifications"""
-    total_segments_verified: int
-    total_fields_verified: int
-    verified_accurate: int
-    verified_corrected: int
-    unable_to_verify: int
-    average_confidence: float
-    high_quality_segments: int
-    medium_quality_segments: int
-    low_quality_segments: int
-
 
 class FieldVerificationData(BaseModel):
     """Single field verification result returned by the LLM"""
@@ -237,3 +171,16 @@ class FieldVerificationData(BaseModel):
 class MarketVerificationLLMOutput(BaseModel):
     """LLM output model for market sizing verification"""
     fields: List[FieldVerificationData] = Field(description="Verification results for each field in the market sizing data")
+    ai_response: str = Field(..., description="The AI assistant's conversational response about market sizing verification")
+
+# Segment generation
+struggle_dynamics_output_format = StruggleDynamicsList.model_json_schema()
+
+# Segment verification (LLM output)
+sd_verification_output_format = SDVerificationResponse.model_json_schema()
+
+# Market sizing generation
+market_sizing_output_format = EnhancedMarketSizing.model_json_schema()
+
+# Market sizing verification (LLM output)
+market_verification_output_format = MarketVerificationLLMOutput.model_json_schema()

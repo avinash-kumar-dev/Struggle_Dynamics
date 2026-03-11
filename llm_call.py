@@ -1,130 +1,100 @@
 """
-LLM interaction layer using Google Gemini with high thinking, grounding, and URL context
+LLM interaction layer for Struggle Dynamics using Google Gemini.
 """
+import json
+import time
+import random
 import os
-import asyncio
-from typing import Optional, Type
-from pydantic import BaseModel
 from google import genai
 from google.genai import types
+from google.genai.errors import ServerError, ClientError
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Configuration
 LLM_MODEL = "gemini-3-flash-preview"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY not found in .env file")
 
+GEMINI_TIMEOUT = 3 * 60 * 1000
+llm_client = genai.Client(api_key=GEMINI_API_KEY, http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT))
 
-def get_ai_response(
-    prompt: str,
-    output_format: Type[BaseModel],
-    grounding: bool = True,
-    thinking_level: str = "high",
-    url_context: list = None,
-    model: str = None
-) -> Optional[BaseModel]:
+
+def get_ai_response(prompt, llm_model, output_format, dynamic_thinking_level="low", grounding=False, url_context=None):
     """
-    Synchronous LLM call with thinking and optional grounding.
-
-    Returns:
-        Parsed Pydantic model instance, or None on error.
+    Core function to get AI response from Gemini with retry logic and JSON validation.
     """
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        active_model = model or LLM_MODEL
+    # Build config
+    config = {
+        "response_mime_type": "application/json",
+        "response_schema": output_format,
+        "thinking_config": types.ThinkingConfig(thinking_level=dynamic_thinking_level)
+    }
 
-        tools = []
-        if grounding:
-            tools.append(types.Tool(google_search=types.GoogleSearch()))
+    # Tools (grounding + url_context)
+    tools = []
+    if grounding:
+        tools.append(types.Tool(google_search=types.GoogleSearch()))
+    if url_context:
         tools.append(types.Tool(url_context={}))
+    if tools:
+        config["tools"] = tools
 
-        thinking_level_map = {
-            "high": types.ThinkingLevel.HIGH,
-            "medium": types.ThinkingLevel.MEDIUM,
-            "low": types.ThinkingLevel.LOW,
-            "minimal": types.ThinkingLevel.MINIMAL,
-        }
-        thinking_level_enum = thinking_level_map.get(thinking_level.lower(), types.ThinkingLevel.HIGH)
+    # Prepend URLs to prompt
+    final_prompt = prompt
+    if url_context:
+        url_section = "\n\n# REFERENCE URLs\n\n"
+        for i, url in enumerate(url_context, 1):
+            url_section += f"{i}. {url}\n"
+        final_prompt = url_section + "\n" + prompt
 
-        config_params = {
-            "response_mime_type": "application/json",
-            "response_json_schema": output_format.model_json_schema(),
-            "thinking_config": types.ThinkingConfig(thinkingLevel=thinking_level_enum),
-            "tools": tools,
-        }
-
-        final_prompt = prompt
-        if url_context:
-            url_section = "\n\n# REFERENCE URLs (Model will retrieve content from these)\n\n"
-            for i, url in enumerate(url_context, 1):
-                url_section += f"{i}. {url}\n"
-            url_section += "\n**Use these URLs as primary sources for market data, pricing, and competitive intelligence.**\n\n"
-            final_prompt = url_section + prompt
-
-        response = client.models.generate_content(
-            model=active_model,
-            contents=final_prompt,
-            config=types.GenerateContentConfig(**config_params)
+    def make_request():
+        return llm_client.models.generate_content(
+            model=llm_model,
+            contents=[final_prompt],
+            config=config
         )
 
-        if response and response.text:
-            return output_format.model_validate_json(response.text)
-        return None
+    max_json_retries = 3
+    for json_attempt in range(max_json_retries):
+        try:
+            response = _call_with_backoff(make_request)
+            response_text = response.text or ""
+            json.loads(response_text)
+            return response_text
 
-    except Exception as e:
-        print(f"❌ LLM Error: {e}")
-        return None
+        except json.JSONDecodeError:
+            if json_attempt < max_json_retries - 1:
+                continue
+            break
 
+        except Exception as e:
+            if json_attempt < max_json_retries - 1:
+                continue
+            print(f"[SD] get_ai_response failed after {max_json_retries} attempts: {e}")
+            break
 
-async def get_ai_response_async(
-    prompt: str,
-    output_format: Type[BaseModel],
-    grounding: bool = True,
-    thinking_level: str = "high",
-    url_context: list = None,
-    model: str = None
-) -> Optional[BaseModel]:
-    """
-    Async LLM call — runs sync call in a thread pool.
-
-    Returns:
-        Parsed Pydantic model instance, or None on error.
-    """
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None,
-        lambda: get_ai_response(prompt, output_format, grounding, thinking_level, url_context, model)
-    )
+    return json.dumps({
+        "error": True,
+        "message": "AI service temporarily unavailable. Please try again in a few minutes.",
+    })
 
 
-async def batch_ai_responses(
-    prompts: list[str],
-    output_format: Type[BaseModel],
-    grounding: bool = True,
-    thinking_level: str = "high",
-    url_context: list = None,
-    batch_size: int = 4
-) -> list[Optional[BaseModel]]:
-    """
-    Execute multiple LLM calls in parallel batches.
+def _call_with_backoff(func, max_retries=5, base_delay=1, max_delay=60):
+    """Retry with exponential backoff for transient API errors."""
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except (ServerError, ClientError) as e:
+            is_retryable = isinstance(e, ServerError) and hasattr(e, 'status_code') and e.status_code in [429, 500, 502, 503, 504]
+            if not is_retryable or attempt == max_retries - 1:
+                raise
+            time.sleep(min(base_delay * (2 ** attempt) + random.uniform(0, 1), max_delay))
+        except Exception:
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(min(base_delay * (2 ** attempt) + random.uniform(0, 1), max_delay))
+    raise Exception("Max retries exceeded")
 
-    Returns:
-        List of parsed responses (None for failed calls).
-    """
-    all_results = []
-
-    for i in range(0, len(prompts), batch_size):
-        batch_prompts = prompts[i:i + batch_size]
-        tasks = [
-            get_ai_response_async(p, output_format, grounding, thinking_level, url_context)
-            for p in batch_prompts
-        ]
-        batch_results = await asyncio.gather(*tasks)
-        all_results.extend(batch_results)
-
-    return all_results
