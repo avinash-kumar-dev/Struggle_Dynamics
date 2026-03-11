@@ -14,8 +14,6 @@ import requests
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
-from pydantic import BaseModel, Field
-
 from output_formats import (
     MarketFieldVerificationResult,
     MarketSizingVerificationResult,
@@ -34,10 +32,11 @@ _MARKET_VERIFICATION_PROMPT_FORMATTED = MARKET_VERIFICATION_SYSTEM_PROMPT.format
 # URL VALIDATION
 # ============================================================================
 
-def validate_urls(urls: List[str], timeout: int = 5) -> List[str]:
-    """Return only accessible (non-404) URLs."""
-    valid: List[str] = []
-    headers = {
+async def validate_urls_async(urls: List[str], timeout: int = 5) -> List[str]:
+    """Validate all URLs concurrently; return only accessible ones."""
+    if not urls:
+        return []
+    _headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -46,17 +45,19 @@ def validate_urls(urls: List[str], timeout: int = 5) -> List[str]:
         "Accept-Language": "en-US,en;q=0.5",
         "Connection": "keep-alive",
     }
-    for url in urls:
+
+    def _check(url: str) -> Optional[str]:
         try:
-            r = requests.head(url, timeout=timeout, allow_redirects=True, headers=headers)
+            r = requests.head(url, timeout=timeout, allow_redirects=True, headers=_headers)
             if r.status_code == 405 or r.status_code >= 400:
-                r = requests.get(url, timeout=timeout, allow_redirects=True, headers=headers, stream=True)
+                r = requests.get(url, timeout=timeout, allow_redirects=True, headers=_headers, stream=True)
                 r.close()
-            if r.status_code < 400:
-                valid.append(url)
+            return url if r.status_code < 400 else None
         except Exception:
-            pass
-    return valid
+            return None
+
+    results = await asyncio.gather(*[asyncio.to_thread(_check, url) for url in urls])
+    return [u for u in results if u]
 
 
 # ============================================================================
@@ -169,7 +170,7 @@ def build_market_verification_prompt(
 # RESPONSE PARSER
 # ============================================================================
 
-def parse_market_verification_response(
+async def parse_market_verification_response(
     llm_output: MarketVerificationLLMOutput,
     market_sizing: Dict[str, Any],
 ) -> MarketSizingVerificationResult:
@@ -225,7 +226,7 @@ def parse_market_verification_response(
         verified_source_urls     = fv.verified_source_urls
 
         verification_sources_validated = (
-            validate_urls(verification_sources_raw) if verification_sources_raw else []
+            await validate_urls_async(verification_sources_raw) if verification_sources_raw else []
         )
 
         if verified_value == "Unable to verify" or confidence_score == 0:
@@ -287,47 +288,25 @@ async def verify_market_sizing_async(
     market_sizing: Dict[str, Any],
     jtbd: Dict[str, Any] = None,
     idea: Dict[str, Any] = None,
-) -> tuple:
+) -> Optional[MarketSizingVerificationResult]:
     """Verify one market sizing dict asynchronously."""
     from llm_call import get_ai_response_async
 
     segment_name = market_sizing.get("segment_name", "Unknown")
-    print(f"   🔄 Verifying: {segment_name}")
-
     prompt = build_market_verification_prompt(market_sizing, jtbd, idea)
 
-    result_tuple = await get_ai_response_async(
+    llm_output = await get_ai_response_async(
         prompt=prompt,
         output_format=MarketVerificationLLMOutput,
         grounding=True,
         thinking_level="medium",
     )
 
-    if not result_tuple or len(result_tuple) != 2:
-        print(f"   ❌ {segment_name}: Verification failed")
-        return None, {}
-
-    llm_output, metrics = result_tuple
     if not llm_output:
-        print(f"   ❌ {segment_name}: No verification data returned")
-        return None, {}
+        print(f"   ❌ {segment_name}: Verification failed")
+        return None
 
-    result = parse_market_verification_response(llm_output, market_sizing)
-    result.search_queries_used  = metrics.get("search_queries", [])
-    result.grounding_chunks_used = metrics.get("grounding_chunks", [])
-    result.token_metrics = {
-        "total_tokens":    metrics.get("total_tokens", 0),
-        "input_tokens":    metrics.get("input_tokens", 0),
-        "output_tokens":   metrics.get("output_tokens", 0),
-        "thinking_tokens": metrics.get("thinking_tokens", 0),
-        "cached_tokens":   metrics.get("cached_tokens", 0),
-    }
-
-    quality_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(result.overall_quality, "⚪")
-    print(f"   ✅ {segment_name}: {quality_icon} {result.overall_quality} "
-          f"({result.average_confidence:.1f}% avg confidence)")
-
-    return result, result.token_metrics
+    return await parse_market_verification_response(llm_output, market_sizing)
 
 
 # ============================================================================
@@ -341,20 +320,11 @@ async def verify_all_market_sizings_async(
     batch_size: int = 3,
 ) -> Dict[str, Any]:
     """Verify all market sizings in parallel batches."""
-    print(f"\n=== VERIFYING {len(market_sizings)} MARKET SIZINGS (batches of {batch_size}) ===\n")
-
     verification_results: List[MarketSizingVerificationResult] = []
-    total_tokens = total_input = total_output = total_thinking = total_cached = 0
-    total_search_queries = total_grounding_chunks = 0
 
     for i in range(0, len(market_sizings), batch_size):
-        batch      = [ms for ms in market_sizings[i:i + batch_size] if ms]
-        batch_num  = (i // batch_size) + 1
-        total_batches = (len(market_sizings) + batch_size - 1) // batch_size
+        batch = [ms for ms in market_sizings[i:i + batch_size] if ms]
 
-        print(f"\n📦 Batch {batch_num}/{total_batches}: {len(batch)} segments in parallel...")
-        for ms in batch:
-            print(f"   🔄 Queued: {ms.get('segment_name', 'Unknown')}")
 
         tasks = [
             verify_market_sizing_async(ms, jtbd=jtbd, idea=idea)
@@ -362,23 +332,12 @@ async def verify_all_market_sizings_async(
         ]
         batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for result_tuple in batch_results:
-            if isinstance(result_tuple, Exception):
-                print(f"   ❌ Verification error: {result_tuple}")
+        for result in batch_results:
+            if isinstance(result, Exception):
+                print(f"   ❌ Verification error: {result}")
                 continue
-            if result_tuple and len(result_tuple) == 2:
-                result, token_metrics = result_tuple
-                if result:
-                    verification_results.append(result)
-                    total_tokens    += token_metrics.get("total_tokens", 0)
-                    total_input     += token_metrics.get("input_tokens", 0)
-                    total_output    += token_metrics.get("output_tokens", 0)
-                    total_thinking  += token_metrics.get("thinking_tokens", 0)
-                    total_cached    += token_metrics.get("cached_tokens", 0)
-                    total_search_queries  += len(result.search_queries_used)
-                    total_grounding_chunks += len(result.grounding_chunks_used)
-
-        print(f"   ✓ Batch {batch_num}/{total_batches} complete")
+            if result:
+                verification_results.append(result)
 
     summary           = _generate_summary(verification_results)
     corrected_sizings = _apply_corrections(market_sizings, verification_results)
@@ -387,15 +346,6 @@ async def verify_all_market_sizings_async(
         "verification_results": verification_results,
         "summary": summary,
         "corrected_market_sizings": corrected_sizings,
-        "metrics": {
-            "total_tokens":           total_tokens,
-            "input_tokens":           total_input,
-            "output_tokens":          total_output,
-            "thinking_tokens":        total_thinking,
-            "cached_tokens":          total_cached,
-            "total_search_queries":   total_search_queries,
-            "total_grounding_chunks": total_grounding_chunks,
-        },
     }
 
 

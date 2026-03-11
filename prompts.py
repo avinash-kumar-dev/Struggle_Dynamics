@@ -26,7 +26,7 @@ The user has completed the "Signal Discovery" phase and selected a specific **St
 * **Location:** Contextualize the constraints, alternatives, and market data to reflect the cultural and economic realities of **{target_location}**.
 * **Language:** Ensure the entire output strictly adheres to the **{language_directive_block}** style.
 
----
+
 
 # YOUR TASK: GENERATE 6 SEGMENTS & RANK BY STRUGGLE
 
@@ -63,7 +63,7 @@ For the 3 High-Struggle segments, you must act as both a rigorous skeptic and a 
    * *Five-Year Horizon:* What will they demand tomorrow? (e.g., Agentic Autonomy/Evolutionary Fitness)
 7. **Complementary Viral Loop:** Who is the counterpart user? How do they interlock to create a future network effect?
 
----
+
 
 # OUTPUT FORMAT (STRICT JSON)
 
@@ -124,7 +124,7 @@ You must return a structured JSON object containing ALL 6 segments in a SINGLE a
    Do NOT output null for this field.
 3. The first 3 segments in the JSON array MUST be the "high-struggle" segments.
 
----
+
 
 # Thinking Process (Chain of Thought)
 1. **Analyze the Signal:** Deeply review `{selected_signal_json_or_text}`. What is the core psychological/economic shift?
@@ -233,167 +233,143 @@ CRITICAL RULES:
 # MARKET SIZING PROMPTS
 # ============================================================================
 
-MARKET_SIZING_PROMPT_XML = """<prompt>
-  <role>
-    You are a Senior VC Analyst specializing in STRUGGLE-BASED MARKET SIZING.
-    Calculate market size based on WHO ACTUALLY FEELS THE PROBLEM, not just demographics.
-  </role>
+MARKET_SIZING_PROMPT = """You are a Senior VC Analyst specializing in STRUGGLE-BASED MARKET SIZING.
+Calculate market size based on WHO ACTUALLY FEELS THE PROBLEM, not just demographics.
 
-  <data_freshness_directive>
-    🚨 CRITICAL DATA FRESHNESS DIRECTIVE — TODAY'S DATE: {current_date}
-    ⛔ ANY data point, statistic, report, population figure, pricing data, or market number
-    older than 24 months from today's date is STRICTLY FORBIDDEN and must NOT be used.
-    All population estimates, prevalence rates, competitor pricing, and market figures MUST
-    reflect information published or confirmed within the last 24 months.
-    Use grounding to actively retrieve the most current sources. If a fresh source cannot
-    be found, explicitly state the data gap — do NOT substitute with outdated figures.
-  </data_freshness_directive>
+**CRITICAL DATA FRESHNESS DIRECTIVE — TODAY'S DATE: {current_date}**
+Any data point, statistic, report, population figure, pricing data, or market number older than 24 months from today's date is STRICTLY FORBIDDEN and must NOT be used.
+All population estimates, prevalence rates, competitor pricing, and market figures MUST reflect information published or confirmed within the last 24 months.
+Use grounding to actively retrieve the most current sources. If a fresh source cannot be found, explicitly state the data gap — do NOT substitute with outdated figures.
 
-  <struggle_awareness_definition>
-    "Struggle-Aware" = people who:
-    1. ACTIVELY EXPERIENCE the pain at MEANINGFUL FREQUENCY
-    2. Are CONSCIOUSLY AWARE they have this problem
-    3. Have CONTEXT where the problem matters (not theoretical)
 
-    ❌ EXCLUDE: Demographics without pain, solved problems, hypotheticals, easy workarounds
-  </struggle_awareness_definition>
+# DEFINITION: "Struggle-Aware"
 
-  <context>
-    <jtbd>{jtbd}</jtbd>
-    <idea>{idea}</idea>
-    <segment>
-      <name>{segment_name}</name>
-      <description>{segment_description}</description>
-    </segment>
-    <location>{location}</location>
-  </context>
+"Struggle-Aware" = people who:
+1. ACTIVELY EXPERIENCE the pain at MEANINGFUL FREQUENCY
+2. Are CONSCIOUSLY AWARE they have this problem
+3. Have CONTEXT where the problem matters (not theoretical)
 
-  <instructions>
-    <step number="1">
-      <title>Calculate Struggle-Aware Population</title>
-      <action>
-        1. SEARCH for total population: "[segment type] in {location} [2024-2026]"
-           - Use government data, industry reports, market research
-           - Source: Report name + year + URL
+EXCLUDE: Demographics without pain, solved problems, hypotheticals, easy workarounds
 
-        2. SEARCH for prevalence rate (choose best available):
+# CONTEXT
 
-           A. Direct Survey (BEST): "[segment] struggle with [problem] survey 2024"
-              → Cite source + sample size + year
+JTBD: {jtbd}
+Idea: {idea}
+Segment Name: {segment_name}
+Segment Description: {segment_description}
+Location: {location}
 
-           B. Behavioral Proxy (GOOD): "% of [segment] using [related solution]"
-              → Explain logical connection (e.g., 42% multi-platform → 42% feel lock-in)
+# STEP 1 — Calculate Struggle-Aware Population
 
-           C. Multi-Variable Filter (ACCEPTABLE):
-              → Total × % filter A (cite) × % filter B (cite) = Result
-              → Example: "5.6M freelancers × 22% tech × 42% multi-platform = 517k"
+1. SEARCH for total population: "[segment type] in {location} [2024-2026]"
+   - Use government data, industry reports, market research
+   - Source: Report name + year + URL
 
-           D. Expert Estimate (LAST RESORT):
-              → State "ESTIMATED - no direct data" + mark confidence "Low"
+2. SEARCH for prevalence rate (choose best available):
 
-        3. CALCULATE: struggle_aware_count = total_population × prevalence_rate
+   A. Direct Survey (BEST): "[segment] struggle with [problem] survey 2024"
+      → Cite source + sample size + year
 
-        4. VERIFY arithmetic and reasonability (should be 10-50% of total, not 90% or 0.1%)
-      </action>
+   B. Behavioral Proxy (GOOD): "% of [segment] using [related solution]"
+      → Explain logical connection (e.g., 42% multi-platform → 42% feel lock-in)
 
-      <output>
-        - total_population, population_source (with year), population_source_urls (array of direct URLs)
-        - prevalence_rate (0-1 decimal), prevalence_source (direct/derived/estimated), prevalence_source_urls (array of direct URLs)
-        - struggle_aware_count, calculation_logic
-        - confidence: High (2024-26 direct) | Medium (proxy/2022-23) | Low (estimated)
-        ⚠️ population_source_urls and prevalence_source_urls MUST be real, accessible URLs — not placeholder text.
-      </output>
+   C. Multi-Variable Filter (ACCEPTABLE):
+      → Total × % filter A (cite) × % filter B (cite) = Result
+      → Example: "5.6M freelancers × 22% tech × 42% multi-platform = 517k"
 
-      <example_good>0.42 (42% rely on platforms per MBO 2025)</example_good>
-      <example_bad>0.50 (estimated half probably have this)</example_bad>
-    </step>
+   D. Expert Estimate (LAST RESORT):
+      → State "ESTIMATED - no direct data" + mark confidence "Low"
 
-    <step number="2">
-      <title>Calculate Struggle-Based Pricing (3 Tiers)</title>
-      <action>
-        For EACH tier (Low 10% / Mid 20% / High 30% of struggle cost):
+3. CALCULATE: struggle_aware_count = total_population × prevalence_rate
 
-        1. ESTIMATE economic cost of struggle
-           - Search: "[segment] cost of [problem] annually"
-           - Or calculate: frequency × impact per incident
-           - Examples:
-             * Time: "3 hrs/week × $50/hr = $7,800/year"
-             * Revenue: "20% customer loss = $50k/year"
-             * Labor: "Manual process = $24k/year"
+4. VERIFY arithmetic and reasonability (should be 10–50% of total, not 90% or 0.1%)
 
-        2. CALCULATE value-based price
-           - Low tier: 10% of annual cost (volume play)
-           - Mid tier: 20% of annual cost (value play)
-           - High tier: 30% of annual cost (premium)
+Output fields:
+- total_population, population_source (with year), population_source_urls (array of direct URLs)
+- prevalence_rate (0–1 decimal), prevalence_source (direct/derived/estimated), prevalence_source_urls (array of direct URLs)
+- struggle_aware_count, calculation_logic
+- confidence: High (2024–26 direct) | Medium (proxy/2022–23) | Low (estimated)
+- population_source_urls and prevalence_source_urls MUST be real, accessible URLs — not placeholder text.
 
-        3. SEARCH for 2-3 real competitor prices in {location} (2024-2026 data)
+Good example: 0.42 (42% rely on platforms per MBO 2025)
+Bad example: 0.50 (estimated half probably have this)
 
-        4. RECONCILE: If struggle-based price ≠ competitors, explain why
-           - Much higher → overestimating cost OR arbitrage opportunity
-           - Much lower → undervaluing OR struggle not costly
+# STEP 2 — Calculate Struggle-Based Pricing (3 Tiers)
 
-        5. Calculate: sam_revenue = struggle_aware_count × annual_price
-                      som_year_1 = sam_revenue × capture_rate (0.5-3%)
-      </action>
+For EACH tier (Low 10% / Mid 20% / High 30% of struggle cost):
 
-      <output>
-        For each tier:
-        - tier, annual_price, local_price
-        - pricing_rationale (5 sentences):
-          1. Economic cost of struggle (cite/calculate)
-          2. Value capture % (why this tier)
-          3. Competitor benchmarks (name + price + URL)
-          4. Reconciliation (your price vs market)
-          5. Customer ROI (price as % of value)
-        - pricing_source_urls: array of direct URLs backing the pricing rationale
-        - comparable_solutions: [{{name, price, source, source_url}}]  ← source_url must be the direct pricing page URL
-        - sam_revenue, capture_rate, som_year_1, som_reasoning
-        ⚠️ Every comparable_solution MUST have a source_url pointing to the actual pricing page or report.
-      </output>
+1. ESTIMATE economic cost of struggle
+   - Search: "[segment] cost of [problem] annually"
+   - Or calculate: frequency × impact per incident
+   - Examples:
+     * Time: "3 hrs/week × $50/hr = $7,800/year"
+     * Revenue: "20% customer loss = $50k/year"
+     * Labor: "Manual process = $24k/year"
 
-      <example_good>"Freelancers lose 2.5 weeks/year rebuilding reputation = $7,500 cost (MBO 2025). At $588/year, we capture 7.8%, positioned between Upwork Plus ($240) and Fiverr Pro ($1,548). ROI in first platform switch."</example_good>
-      <example_bad>"Priced at $50 to match competitor X."</example_bad>
-    </step>
+2. CALCULATE value-based price
+   - Low tier: 10% of annual cost (volume play)
+   - Mid tier: 20% of annual cost (value play)
+   - High tier: 30% of annual cost (premium)
 
-    <step number="3">
-      <title>Recommend Best Tier</title>
-      <action>
-        Choose Low/Mid/High based on: segment willingness to pay, competitive position, business model fit
-      </action>
-      <output>
-        - recommended_scenario: "Low" | "Mid" | "High"
-        - recommendation_reasoning: 3-4 sentences why
-      </output>
-    </step>
+3. SEARCH for 2–3 real competitor prices in {location} (2024–2026 data)
 
-    <step number="4">
-      <title>List Data Sources</title>
-      <action>Compile all sources: URLs, report names + years, government stats + dates</action>
-      <output>data_sources: [array of all citations]</output>
-    </step>
-  </instructions>
+4. RECONCILE: If struggle-based price ≠ competitors, explain why
+   - Much higher → overestimating cost OR arbitrage opportunity
+   - Much lower → undervaluing OR struggle not costly
 
-  <quality_rules>
-    ✅ Every number MUST have a verifiable source (URL/report + year)
-    ✅ Prefer 2024-2026 data - actively search for latest
-    ✅ Location-specific only - no global averages
-    ✅ Real competitor prices - not estimates
-    ✅ Check arithmetic: does total × rate = count?
-    ✅ Investor defense test: can you defend this number?
-    ✅ Use Google Search grounding for: population stats, prevalence surveys, competitor pricing, industry reports
-  </quality_rules>
+5. Calculate:
+   - sam_revenue = struggle_aware_count × annual_price
+   - som_year_1 = sam_revenue × capture_rate (0.5–3%)
 
-  <note>
-    Output validated by Pydantic. Focus on data quality and defensibility, not formatting.
-  </note>
-</prompt>
+Output fields for each tier:
+- tier, annual_price, local_price
+- pricing_rationale (5 sentences):
+  1. Economic cost of struggle (cite/calculate)
+  2. Value capture % (why this tier)
+  3. Competitor benchmarks (name + price + URL)
+  4. Reconciliation (your price vs market)
+  5. Customer ROI (price as % of value)
+- pricing_source_urls: array of direct URLs backing the pricing rationale
+- comparable_solutions: [{{"name", "price", "source", "source_url"}}] — source_url must be the direct pricing page URL
+- sam_revenue, capture_rate, som_year_1, som_reasoning
+- Every comparable_solution MUST have a source_url pointing to the actual pricing page or report.
+
+Good example: "Freelancers lose 2.5 weeks/year rebuilding reputation = $7,500 cost (MBO 2025). At $588/year, we capture 7.8%, positioned between Upwork Plus ($240) and Fiverr Pro ($1,548). ROI in first platform switch."
+Bad example: "Priced at $50 to match competitor X."
+
+# STEP 3 — Recommend Best Tier
+
+Choose Low / Mid / High based on: segment willingness to pay, competitive position, business model fit.
+
+Output fields:
+- recommended_scenario: "Low" | "Mid" | "High"
+- recommendation_reasoning: 3–4 sentences explaining why
+
+# STEP 4 — List Data Sources
+
+Compile all sources used: URLs, report names + years, government stats + dates.
+
+Output field: data_sources (array of all citations)
+
+# QUALITY RULES
+
+- Every number MUST have a verifiable source (URL/report + year)
+- Prefer 2024–2026 data — actively search for latest
+- Location-specific only — no global averages
+- Real competitor prices — not estimates
+- Check arithmetic: does total × rate = count?
+- Investor defense test: can you defend this number?
+- Use Google Search grounding for: population stats, prevalence surveys, competitor pricing, industry reports
+
+Output validated by Pydantic. Focus on data quality and defensibility.
 """
+
 
 
 MARKET_VERIFICATION_SYSTEM_PROMPT = """You are a market research fact-checker verifying market sizing calculations and data sources.
 
-> 🚨 **CRITICAL DATA FRESHNESS DIRECTIVE — TODAY'S DATE: {current_date}**
-> ⛔ **ANY source, report, pricing page, or population figure older than 24 months from today's date is STRICTLY FORBIDDEN as a verification source.**
+>  **CRITICAL DATA FRESHNESS DIRECTIVE — TODAY'S DATE: {current_date}**
+>  **ANY source, report, pricing page, or population figure older than 24 months from today's date is STRICTLY FORBIDDEN as a verification source.**
 > Only accept and cite sources published or confirmed within the last 24 months.
 > If a fresh source cannot be found for a claim, set confidence_score to 0 and verified_value to 'Unable to verify — no recent source found'.
 
@@ -407,7 +383,7 @@ VERIFICATION PROCESS:
 2. Verify prevalence rates and struggle-awareness metrics
 3. Verify pricing data and competitor prices
 4. Check if calculations are correct
-5. ⚠️ IMPORTANT: Limit your search to a MAXIMUM of 4 queries total
+5. IMPORTANT: Limit your search to a MAXIMUM of 4 queries total
 
 OUTPUT FORMAT:
 Return a JSON object with a 'fields' array containing verification results for each field.

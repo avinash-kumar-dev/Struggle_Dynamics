@@ -7,9 +7,7 @@ Schema differences vs. segment_verification.py:
   - acuteness_rationale                                    instead of priority_rationale
 """
 
-import re
 import json
-import time
 import asyncio
 import requests
 from datetime import datetime
@@ -25,10 +23,11 @@ _VERIFICATION_PROMPT_FORMATTED = STRUGGLE_DYNAMICS_VERIFICATION_PROMPT.format(
 
 # ==================== URL VALIDATION ====================
 
-def validate_urls(urls: List[str], timeout: int = 5) -> List[str]:
-    """Return only accessible URLs (non-404)."""
-    valid_urls = []
-    headers = {
+async def validate_urls_async(urls: List[str], timeout: int = 5) -> List[str]:
+    """Validate all URLs concurrently; return only accessible ones."""
+    if not urls:
+        return []
+    _headers = {
         'User-Agent': (
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
             'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -37,20 +36,22 @@ def validate_urls(urls: List[str], timeout: int = 5) -> List[str]:
         'Accept-Language': 'en-US,en;q=0.5',
         'Connection': 'keep-alive',
     }
-    for url in urls:
+
+    def _check(url: str) -> Optional[str]:
         try:
-            response = requests.head(url, timeout=timeout, allow_redirects=True, headers=headers)
-            if response.status_code == 405 or response.status_code >= 400:
-                response = requests.get(url, timeout=timeout, allow_redirects=True, headers=headers, stream=True)
-                response.close()
-            if response.status_code < 400:
-                valid_urls.append(url)
+            r = requests.head(url, timeout=timeout, allow_redirects=True, headers=_headers)
+            if r.status_code == 405 or r.status_code >= 400:
+                r = requests.get(url, timeout=timeout, allow_redirects=True, headers=_headers, stream=True)
+                r.close()
+            return url if r.status_code < 400 else None
         except Exception:
-            pass
-    return valid_urls
+            return None
+
+    results = await asyncio.gather(*[asyncio.to_thread(_check, url) for url in urls])
+    return [u for u in results if u]
 
 
-# ==================== EXTRACTION ====================
+# ==================== FIELDS & SCHEMAS ====================
 
 BASE_FIELDS = [
     'behavioral_evidence',
@@ -60,27 +61,22 @@ BASE_FIELDS = [
 ]
 
 
-def extract_verifiable_fields_sd(segment: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Extract verifiable fields from a Struggle Dynamics segment."""
-    fields = []
-    segment_name = segment.get('segment_name', 'Unknown Segment')
-    validation_data = segment.get('validation_data', {})
+# --- Response schema (module-level: defined once, not recreated per call) ---
+class _FieldVerification(BaseModel):
+    verified_value: str
+    confidence_score: int
+    discrepancies: List[str] = Field(default_factory=list)
+    correction_needed: bool
+    corrected_value: str = ""
+    verification_sources: List[str] = Field(default_factory=list)
 
-    for field_name in BASE_FIELDS:
-        if field_name in validation_data:
-            fd = validation_data[field_name]
-            value = fd.get('value', '') if isinstance(fd, dict) else str(fd)
-            source_urls = fd.get('source_urls', []) if isinstance(fd, dict) else []
-            if value:
-                fields.append({
-                    'segment_name': segment_name,
-                    'field_name': field_name,
-                    'claimed_value': value,
-                    'source_urls': source_urls,
-                    'group': 'validation_data'
-                })
 
-    return fields
+class _SDVerificationResponse(BaseModel):
+    behavioral_evidence: _FieldVerification
+    pain_intensity: _FieldVerification
+    current_solutions: _FieldVerification
+    segment_accessibility: _FieldVerification
+    updated_acuteness_rationale: str
 
 
 # ==================== PROMPT BUILDING ====================
@@ -134,36 +130,33 @@ def build_sd_verification_prompt(
 
 # ==================== PARSING ====================
 
-def parse_sd_verification_response(
-    response_data: Dict[str, Any],
+async def parse_sd_verification_response(
+    response: _SDVerificationResponse,
     segment: Dict[str, Any]
 ) -> SDSegmentVerificationResult:
-    """Parse LLM verification response into SDSegmentVerificationResult."""
-    segment_name = segment.get('segment_name', 'Unknown')
+    """Parse (typed) LLM verification response into SDSegmentVerificationResult."""
+    segment_name    = segment.get('segment_name', 'Unknown')
     validation_tier = segment.get('validation_tier', 'peripheral')
     validation_data = segment.get('validation_data', {})
-    field_results = []
-
+    field_results   = []
 
     for field_name in BASE_FIELDS:
         if field_name not in validation_data:
             continue
         fd = validation_data[field_name]
         claimed_value = fd.get('value', '') if isinstance(fd, dict) else str(fd)
-        source_urls = fd.get('source_urls', []) if isinstance(fd, dict) else []
+        source_urls   = fd.get('source_urls', []) if isinstance(fd, dict) else []
 
-        vd = response_data.get(field_name, {})
-        verified_value = vd.get('verified_value', 'Unable to verify')
-        confidence_score = vd.get('confidence_score', 0)
-        discrepancies = vd.get('discrepancies', [])
-        correction_needed = vd.get('correction_needed', False)
-        corrected_value = vd.get('corrected_value', '')
-        verification_sources_claimed = vd.get('verification_sources', [])
-        verification_sources_validated = validate_urls(verification_sources_claimed) if verification_sources_claimed else []
+        fv = getattr(response, field_name)  # typed _FieldVerification — no .get() needed
 
-        if verified_value == 'Unable to verify' or confidence_score == 0:
+        verification_sources_validated = (
+            await validate_urls_async(fv.verification_sources)
+            if fv.verification_sources else []
+        )
+
+        if fv.verified_value == 'Unable to verify' or fv.confidence_score == 0:
             status = 'unable_to_verify'
-        elif correction_needed:
+        elif fv.correction_needed:
             status = 'corrected'
         else:
             status = 'verified'
@@ -172,34 +165,32 @@ def parse_sd_verification_response(
             field_name=field_name,
             claimed_value=claimed_value,
             source_urls=source_urls,
-            verified_value=verified_value,
-            confidence_score=confidence_score,
+            verified_value=fv.verified_value,
+            confidence_score=fv.confidence_score,
             verification_status=status,
-            discrepancies=discrepancies,
-            correction_needed=correction_needed,
-            corrected_value=corrected_value,
-            verification_sources_claimed=verification_sources_claimed,
-            verification_sources=verification_sources_validated
+            discrepancies=fv.discrepancies,
+            correction_needed=fv.correction_needed,
+            corrected_value=fv.corrected_value,
+            verification_sources_claimed=fv.verification_sources,
+            verification_sources=verification_sources_validated,
         ))
 
-    # --- Aggregate stats ---
-    avg_confidence = (
+    avg_confidence  = (
         sum(f.confidence_score for f in field_results) / len(field_results)
         if field_results else 0.0
     )
-    verified_count = len([f for f in field_results if f.verification_status == 'verified'])
-    corrected_count = len([f for f in field_results if f.verification_status == 'corrected'])
-    unable_count = len([f for f in field_results if f.verification_status == 'unable_to_verify'])
+    verified_count  = sum(1 for f in field_results if f.verification_status == 'verified')
+    corrected_count = sum(1 for f in field_results if f.verification_status == 'corrected')
+    unable_count    = sum(1 for f in field_results if f.verification_status == 'unable_to_verify')
 
-    if avg_confidence >= 80 and corrected_count <= 1:
-        quality = 'high'
-    elif avg_confidence >= 60:
-        quality = 'medium'
-    else:
-        quality = 'low'
+    quality = (
+        'high'   if avg_confidence >= 80 and corrected_count <= 1
+        else 'medium' if avg_confidence >= 60
+        else 'low'
+    )
 
     acuteness_original = segment.get('acuteness_rationale', '')
-    acuteness_updated = response_data.get('updated_acuteness_rationale', acuteness_original)
+    acuteness_updated  = response.updated_acuteness_rationale or acuteness_original
 
     return SDSegmentVerificationResult(
         segment_name=segment_name,
@@ -212,7 +203,7 @@ def parse_sd_verification_response(
         fields_unable_to_verify=unable_count,
         acuteness_rationale_original=acuteness_original,
         acuteness_rationale_updated=acuteness_updated,
-        verification_timestamp=datetime.now().isoformat()
+        verification_timestamp=datetime.now().isoformat(),
     )
 
 
@@ -222,7 +213,7 @@ async def verify_sd_segment_async(
     segment: Dict[str, Any],
     signal: Dict[str, Any] = None,
     idea: Dict[str, Any] = None
-) -> tuple:
+):
     """Verify one Struggle Dynamics segment asynchronously."""
     from llm_call import get_ai_response_async
 
@@ -238,32 +229,10 @@ async def verify_sd_segment_async(
                 all_urls.extend(fd.get('source_urls', []))
     unique_urls = list(set(all_urls))
 
-    # Response schema
-    class FieldVerification(BaseModel):
-        verified_value: str
-        confidence_score: int
-        discrepancies: List[str] = Field(default_factory=list)
-        correction_needed: bool
-        corrected_value: str = ""
-        verification_sources: List[str] = Field(default_factory=list)
-
-    class SDVerificationResponse(BaseModel):
-        behavioral_evidence: FieldVerification
-        pain_intensity: FieldVerification
-        current_solutions: FieldVerification
-        segment_accessibility: FieldVerification
-        updated_acuteness_rationale: str
-
-    zero_tokens = {
-        'total_tokens': 0, 'input_tokens': 0, 'output_tokens': 0,
-        'thinking_tokens': 0, 'cached_tokens': 0,
-        'search_queries': [], 'grounding_chunks': []
-    }
-
     try:
-        response, metrics = await get_ai_response_async(
+        response = await get_ai_response_async(
             prompt=prompt,
-            output_format=SDVerificationResponse,
+            output_format=_SDVerificationResponse,
             grounding=True,
             thinking_level="medium",
             url_context=unique_urls
@@ -272,30 +241,7 @@ async def verify_sd_segment_async(
         if response is None:
             raise Exception("LLM returned None")
 
-        result = parse_sd_verification_response(response.model_dump(), segment)
-
-        token_metrics = zero_tokens.copy()
-        if metrics:
-            sq = metrics.get('search_queries', [])
-            gc = metrics.get('grounding_chunks', [])
-            result.search_queries_used = sq
-            result.grounding_chunks_used = gc
-            inp = metrics.get('input_tokens', 0)
-            out = metrics.get('output_tokens', 0)
-            think = metrics.get('thinking_tokens', 0)
-            cached = metrics.get('cached_tokens', 0)
-            token_metrics = {
-                'total_tokens': inp + out + think,
-                'input_tokens': inp,
-                'output_tokens': out,
-                'thinking_tokens': think,
-                'cached_tokens': cached,
-                'search_queries': sq,
-                'grounding_chunks': gc
-            }
-            result.token_metrics = token_metrics
-
-        return result, token_metrics
+        return await parse_sd_verification_response(response, segment)
 
     except Exception as e:
         print(f"   ⚠️  Error verifying segment '{segment.get('segment_name')}': {e}")
@@ -308,10 +254,9 @@ async def verify_sd_segment_async(
             fields_verified=0,
             fields_corrected=0,
             fields_unable_to_verify=len(BASE_FIELDS),
-            token_metrics=zero_tokens,
             verification_timestamp=datetime.now().isoformat()
         )
-        return error_result, zero_tokens
+        return error_result
 
 
 # ==================== BATCH VERIFY ====================
@@ -338,31 +283,18 @@ async def verify_all_sd_segments_async(
     """Async implementation: verifies segments in parallel batches."""
     verification_results: List[SDSegmentVerificationResult] = []
 
-    total_tokens = total_input = total_output = total_thinking = total_cached = 0
-    total_search_queries = total_grounding_chunks = 0
-
-    print(f"\n=== VERIFYING {len(segments)} STRUGGLE DYNAMICS SEGMENTS (batches of {batch_size}) ===\n")
-
     for i in range(0, len(segments), batch_size):
         batch = segments[i:i + batch_size]
-        batch_num = (i // batch_size) + 1
-        total_batches = (len(segments) + batch_size - 1) // batch_size
 
-        print(f"\n📦 Batch {batch_num}/{total_batches}: {len(batch)} segments in parallel...")
-
-        tasks = []
-        for seg in batch:
-            tier_icon = "🔥" if seg.get('validation_tier') == 'high-struggle' else "⚪"
-            print(f"   {tier_icon} Queued: {seg.get('segment_name', 'Unknown')} [{seg.get('validation_tier')}]")
-            tasks.append(verify_sd_segment_async(seg, signal=signal, idea=idea))
+        tasks = [verify_sd_segment_async(seg, signal=signal, idea=idea) for seg in batch]
 
         batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for j, result_tuple in enumerate(batch_results):
+        for j, result in enumerate(batch_results):
             seg_name = batch[j].get('segment_name', f'Segment {i+j+1}')
 
-            if isinstance(result_tuple, Exception):
-                print(f"   ❌ {seg_name}: Failed - {result_tuple}")
+            if isinstance(result, Exception):
+                print(f"   ❌ {seg_name}: Failed - {result}")
                 verification_results.append(SDSegmentVerificationResult(
                     segment_name=seg_name,
                     validation_tier=batch[j].get('validation_tier', 'peripheral'),
@@ -374,23 +306,8 @@ async def verify_all_sd_segments_async(
                     fields_unable_to_verify=len(BASE_FIELDS),
                     verification_timestamp=datetime.now().isoformat()
                 ))
-            else:
-                result, token_metrics = result_tuple
+            elif result is not None:
                 verification_results.append(result)
-
-                total_tokens += token_metrics.get('total_tokens', 0)
-                total_input += token_metrics.get('input_tokens', 0)
-                total_output += token_metrics.get('output_tokens', 0)
-                total_thinking += token_metrics.get('thinking_tokens', 0)
-                total_cached += token_metrics.get('cached_tokens', 0)
-                total_search_queries += len(token_metrics.get('search_queries', []))
-                total_grounding_chunks += len(token_metrics.get('grounding_chunks', []))
-
-                quality_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(result.overall_segment_quality, "⚪")
-                print(f"   ✅ {seg_name}: {quality_icon} {result.overall_segment_quality} "
-                      f"({result.segment_confidence_avg:.1f}% confidence)")
-
-        print(f"   ✓ Batch {batch_num}/{total_batches} complete")
 
     summary = _generate_sd_summary(verification_results)
     corrected_segments = _apply_sd_corrections(segments, verification_results)
@@ -399,15 +316,6 @@ async def verify_all_sd_segments_async(
         'verification_results': verification_results,
         'summary': summary,
         'corrected_segments': corrected_segments,
-        'metrics': {
-            'total_tokens': total_tokens,
-            'input_tokens': total_input,
-            'output_tokens': total_output,
-            'thinking_tokens': total_thinking,
-            'cached_tokens': total_cached,
-            'total_search_queries': total_search_queries,
-            'total_grounding_chunks': total_grounding_chunks,
-        }
     }
 
 

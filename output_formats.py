@@ -97,9 +97,6 @@ class SDSegmentVerificationResult(BaseModel):
     fields_unable_to_verify: int
     acuteness_rationale_original: str = ""
     acuteness_rationale_updated: str = ""
-    search_queries_used: List[str] = Field(default_factory=list)
-    grounding_chunks_used: List[Dict[str, Any]] = Field(default_factory=list)
-    token_metrics: Dict[str, int] = Field(default_factory=dict)
     verification_timestamp: str
 
 
@@ -208,9 +205,6 @@ class MarketSizingVerificationResult(BaseModel):
     fields_verified: int
     fields_corrected: int
     fields_unable_to_verify: int
-    search_queries_used: List[str] = Field(default_factory=list)
-    grounding_chunks_used: List[Dict[str, Any]] = Field(default_factory=list)
-    token_metrics: Dict[str, int] = Field(default_factory=dict)
     verification_timestamp: str
 
 

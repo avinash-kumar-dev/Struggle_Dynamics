@@ -17,7 +17,6 @@ import os
 import json
 import argparse
 import asyncio
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -196,14 +195,6 @@ timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 test_dir = Path(f"test_results_sd_low/{TEST_NAME}_{timestamp}")
 test_dir.mkdir(parents=True, exist_ok=True)
 
-pipeline_start = time.time()
-pipeline_metrics: dict = {
-    "generation":            {},
-    "verification":          {},
-    "market_sizing":         {},
-    "market_verification":   {},
-}
-
 print("=" * 80)
 print("STRUGGLE DYNAMICS — SEGMENT GENERATION + VERIFICATION")
 print("=" * 80)
@@ -220,8 +211,7 @@ print(f"\n{'='*80}")
 print("STEP 1: GENERATING 6 STRUGGLE DYNAMICS SEGMENTS")
 print("=" * 80)
 
-step_start = time.time()
-sd_result, gen_metrics = generate_struggle_dynamics_segments(
+sd_result = generate_struggle_dynamics_segments(
     confirmed_user=td["confirmed_user"],
     confirmed_struggle=td["confirmed_struggle"],
     confirmed_solution=td["confirmed_solution"],
@@ -230,18 +220,6 @@ sd_result, gen_metrics = generate_struggle_dynamics_segments(
     target_location=td["target_location"],
     language_level=td["language_level"],
 )
-gen_duration = time.time() - step_start
-
-pipeline_metrics["generation"] = {
-    "duration_seconds": gen_duration,
-    "total_tokens": gen_metrics.get("total_tokens", 0) if gen_metrics else 0,
-    "input_tokens": gen_metrics.get("input_tokens", 0) if gen_metrics else 0,
-    "output_tokens": gen_metrics.get("output_tokens", 0) if gen_metrics else 0,
-    "thinking_tokens": gen_metrics.get("thinking_tokens", 0) if gen_metrics else 0,
-    "cached_tokens": gen_metrics.get("cached_tokens", 0) if gen_metrics else 0,
-    "search_queries": len(gen_metrics.get("search_queries", [])) if gen_metrics else 0,
-    "grounding_chunks": len(gen_metrics.get("grounding_chunks", [])) if gen_metrics else 0,
-}
 
 if not sd_result:
     print("\n❌ FAILED to generate segments")
@@ -287,7 +265,6 @@ gen_output = {
     "segments": [s.model_dump() for s in all_segments],
     "total_segments": sd_result.total_segments,
     "generation_notes": sd_result.generation_notes,
-    "metadata": gen_metrics or {},
 }
 segments_file = test_dir / "segments.json"
 save_to_json(gen_output, segments_file)
@@ -311,29 +288,13 @@ idea_context = {
 high_struggle_segs = [s.model_dump() for s in all_segments[:3]]
 peripheral_segs = [s.model_dump() for s in all_segments[3:]]
 
-step_start = time.time()
 verification_result = verify_all_sd_segments(
     segments=high_struggle_segs,
     signal=td["selected_signal"],
     idea=idea_context,
     batch_size=3,
 )
-ver_duration = time.time() - step_start
-ver_metrics = verification_result.get("metrics", {})
 
-pipeline_metrics["verification"] = {
-    "duration_seconds": ver_duration,
-    "total_tokens": ver_metrics.get("total_tokens", 0),
-    "input_tokens": ver_metrics.get("input_tokens", 0),
-    "output_tokens": ver_metrics.get("output_tokens", 0),
-    "thinking_tokens": ver_metrics.get("thinking_tokens", 0),
-    "cached_tokens": ver_metrics.get("cached_tokens", 0),
-    "search_queries": ver_metrics.get("total_search_queries", 0),
-    "grounding_chunks": ver_metrics.get("total_grounding_chunks", 0),
-    "segments_verified": 3,
-}
-
-# Show verification summary
 ver_summary = verification_result["summary"]
 print(f"\n📊 Verification Summary:")
 print(f"   Total Segments Verified: {ver_summary.total_segments_verified}")
@@ -396,31 +357,15 @@ idea_for_market = {
 
 corrected_high_struggle = verification_result["corrected_segments"]  # already top 3
 
-step_start = time.time()
-ms_results, ms_raw_metrics = generate_market_sizings(
+ms_results = generate_market_sizings(
     segments=corrected_high_struggle,
     jtbd=td["selected_signal"],
     idea=idea_for_market,
     location=td["target_location"],
     max_segments=3,
 )
-ms_duration = time.time() - step_start
 
-# Normalise batch metrics (batch_ai_responses uses total_input_tokens, etc.)
-pipeline_metrics["market_sizing"] = {
-    "duration_seconds": ms_duration,
-    "total_tokens":     ms_raw_metrics.get("total_tokens", 0),
-    "input_tokens":     ms_raw_metrics.get("total_input_tokens",   ms_raw_metrics.get("input_tokens", 0)),
-    "output_tokens":    ms_raw_metrics.get("total_output_tokens",  ms_raw_metrics.get("output_tokens", 0)),
-    "thinking_tokens":  ms_raw_metrics.get("total_thinking_tokens",ms_raw_metrics.get("thinking_tokens", 0)),
-    "cached_tokens":    ms_raw_metrics.get("total_cached_tokens",  ms_raw_metrics.get("cached_tokens", 0)),
-    "search_queries":   len(ms_raw_metrics.get("search_queries", [])),
-    "grounding_chunks": len(ms_raw_metrics.get("grounding_chunks", [])),
-    "segments_sized":   len([r for r in ms_results if r is not None]),
-}
-
-individual_ms_metrics = ms_raw_metrics.get("individual_metrics", [])
-market_sizing_dicts = market_sizings_to_dicts(ms_results, individual_ms_metrics)
+market_sizing_dicts = market_sizings_to_dicts(ms_results)
 
 print(f"\n✅ Market sizing complete:")
 for ms in market_sizing_dicts:
@@ -458,27 +403,12 @@ print("=" * 80)
 
 valid_sizings = [ms for ms in market_sizing_dicts if ms]
 
-step_start = time.time()
 mv_result = verify_all_market_sizings(
     market_sizings=valid_sizings,
     jtbd=td["selected_signal"],
     idea=idea_for_market,
     batch_size=3,
 )
-mv_duration = time.time() - step_start
-mv_metrics  = mv_result.get("metrics", {})
-
-pipeline_metrics["market_verification"] = {
-    "duration_seconds": mv_duration,
-    "total_tokens":     mv_metrics.get("total_tokens", 0),
-    "input_tokens":     mv_metrics.get("input_tokens", 0),
-    "output_tokens":    mv_metrics.get("output_tokens", 0),
-    "thinking_tokens":  mv_metrics.get("thinking_tokens", 0),
-    "cached_tokens":    mv_metrics.get("cached_tokens", 0),
-    "search_queries":   mv_metrics.get("total_search_queries", 0),
-    "grounding_chunks": mv_metrics.get("total_grounding_chunks", 0),
-    "segments_verified": len(mv_result.get("verification_results", [])),
-}
 
 mv_summary = mv_result["summary"]
 print(f"\n📊 Market Verification Summary:")
@@ -506,77 +436,8 @@ save_to_json(
 )
 print(f"\n💾 Market sizing verified saved to: {mv_verified_file}")
 
-# ============================================================================
-# PIPELINE METRICS SUMMARY
-# ============================================================================
-pipeline_end = time.time()
-total_duration = pipeline_end - pipeline_start
-
-total_tokens = sum(s.get("total_tokens", 0) for s in pipeline_metrics.values())
-total_input = sum(s.get("input_tokens", 0) for s in pipeline_metrics.values())
-total_output = sum(s.get("output_tokens", 0) for s in pipeline_metrics.values())
-total_thinking = sum(s.get("thinking_tokens", 0) for s in pipeline_metrics.values())
-total_cached = sum(s.get("cached_tokens", 0) for s in pipeline_metrics.values())
-
-print(f"\n{'='*80}")
-print("📊 COMPLETE PIPELINE METRICS")
-print("=" * 80)
-
-print(f"\n⏱️  TIMING:")
-print(f"   1️⃣  Segment Generation:      {pipeline_metrics['generation']['duration_seconds']:.1f}s")
-print(f"   2️⃣  Segment Verification:    {pipeline_metrics['verification']['duration_seconds']:.1f}s")
-print(f"   3️⃣  Market Sizing:           {pipeline_metrics['market_sizing']['duration_seconds']:.1f}s")
-print(f"   4️⃣  Market Verification:     {pipeline_metrics['market_verification']['duration_seconds']:.1f}s")
-print(f"   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-print(f"   📍 TOTAL: {total_duration:.1f}s ({total_duration/60:.1f} min)")
-
-print(f"\n🪙  TOKEN USAGE:")
-for step_num, (step_key, step_label) in enumerate([
-    ("generation",          "Generation"),
-    ("verification",        "SD Verification"),
-    ("market_sizing",       "Market Sizing"),
-    ("market_verification", "Market Verification"),
-], 1):
-    m = pipeline_metrics[step_key]
-    print(f"   {step_num}️⃣  {step_label}:")
-    print(f"      Total: {m.get('total_tokens', 0):,}")
-    print(f"      ├─ Input:    {m.get('input_tokens', 0):,}")
-    print(f"      ├─ Output:   {m.get('output_tokens', 0):,}")
-    print(f"      ├─ Thinking: {m.get('thinking_tokens', 0):,}")
-    print(f"      └─ Cached:   {m.get('cached_tokens', 0):,}")
-    if m.get('search_queries', 0):
-        print(f"      🔍 Searches: {m.get('search_queries', 0)}")
-
-print(f"\n   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-print(f"   📍 TOTAL TOKENS: {total_tokens:,}")
-print(f"      ├─ Input:    {total_input:,}")
-print(f"      ├─ Output:   {total_output:,}")
-print(f"      ├─ Thinking: {total_thinking:,}")
-print(f"      └─ Cached:   {total_cached:,}")
-
-# Save pipeline metrics
-metrics_output = {
-    "test_info": {"test_name": TEST_NAME, "timestamp": timestamp, "test_directory": str(test_dir)},
-    "total_pipeline_duration_seconds": total_duration,
-    "total_pipeline_duration_minutes": total_duration / 60,
-    "step_metrics": pipeline_metrics,
-    "totals": {
-        "total_tokens":    total_tokens,
-        "input_tokens":    total_input,
-        "output_tokens":   total_output,
-        "thinking_tokens": total_thinking,
-        "cached_tokens":   total_cached,
-        "search_queries":  sum(s.get("search_queries", 0) for s in pipeline_metrics.values()),
-        "grounding_chunks": sum(s.get("grounding_chunks", 0) for s in pipeline_metrics.values()),
-    },
-}
-metrics_file = test_dir / "pipeline_metrics.json"
-save_to_json(metrics_output, metrics_file)
-print(f"\n💾 Pipeline metrics saved to: {metrics_file}")
-
 print(f"\n✅ All results saved to: {test_dir}/")
 print(f"   • segments.json              — Raw generated segments (6 total)")
 print(f"   • segments_corrected.json    — Verified SD segments (use for market sizing)")
 print(f"   • market_sizing_raw.json     — Raw market sizing (3 segments × 3 tiers)")
 print(f"   • market_sizing_verified.json — Corrected market sizing (use for production)")
-print(f"   • pipeline_metrics.json      — Full 4-step metrics")
