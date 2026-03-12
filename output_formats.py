@@ -173,6 +173,11 @@ class MarketVerificationLLMOutput(BaseModel):
     fields: List[FieldVerificationData] = Field(description="Verification results for each field in the market sizing data")
     ai_response: str = Field(..., description="The AI assistant's conversational response about market sizing verification")
 
+
+# ============================================================================
+# PRE-COMPUTED OUTPUT SCHEMAS (model_json_schema)
+# ============================================================================
+
 # Segment generation
 struggle_dynamics_output_format = StruggleDynamicsList.model_json_schema()
 

@@ -43,3 +43,80 @@ async def validate_urls_async(urls: List[str], timeout: int = 5) -> List[str]:
 
     results = await asyncio.gather(*[asyncio.to_thread(_check, url) for url in urls])
     return [u for u in results if u]
+
+
+async def sanitize_urls_in_output(data):
+    """
+    Recursively walk a dict/list structure, find ALL URLs, validate them
+    in one batch, then:
+      - URL strings → blank ("") if invalid
+      - URL lists   → filter out invalid entries
+
+    Call this on final corrected output to guarantee no unvalidated URLs.
+    """
+    if not data:
+        return data
+
+    # Phase 1: Collect every unique URL
+    all_urls = set()
+
+    def _collect(obj):
+        if isinstance(obj, dict):
+            for v in obj.values():
+                if isinstance(v, str) and v.startswith(("http://", "https://")):
+                    all_urls.add(v)
+                elif isinstance(v, (dict, list)):
+                    _collect(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                if isinstance(item, str) and item.startswith(("http://", "https://")):
+                    all_urls.add(item)
+                elif isinstance(item, (dict, list)):
+                    _collect(item)
+
+    if isinstance(data, list):
+        for item in data:
+            _collect(item)
+    else:
+        _collect(data)
+
+    if not all_urls:
+        return data
+
+    # Phase 2: Validate in one batch
+    valid_urls = set(await validate_urls_async(list(all_urls)))
+
+    # Phase 3: Walk again — blank invalid strings, filter invalid list entries
+    def _sanitize(obj):
+        if isinstance(obj, dict):
+            for k, v in list(obj.items()):
+                if isinstance(v, str) and v.startswith(("http://", "https://")):
+                    if v not in valid_urls:
+                        obj[k] = ""
+                elif isinstance(v, list):
+                    obj[k] = [
+                        item for item in v
+                        if not (
+                            isinstance(item, str)
+                            and item.startswith(("http://", "https://"))
+                            and item not in valid_urls
+                        )
+                    ]
+                    for item in obj[k]:
+                        if isinstance(item, (dict, list)):
+                            _sanitize(item)
+                elif isinstance(v, dict):
+                    _sanitize(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                if isinstance(item, (dict, list)):
+                    _sanitize(item)
+
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, (dict, list)):
+                _sanitize(item)
+    else:
+        _sanitize(data)
+
+    return data

@@ -8,7 +8,6 @@ Public API
 ----------
 build_struggle_dynamics_prompt(...)       -> str
 build_market_sizing_prompt(...)           -> str
-build_market_sizing_prompts_batch(...)    -> list[str]
 build_sd_verification_prompt(...)         -> str
 build_market_verification_prompt(...)     -> str
 """
@@ -113,31 +112,6 @@ def build_market_sizing_prompt(
     )
 
 
-def build_market_sizing_prompts_batch(
-    segments: list,
-    jtbd: Any,
-    idea: Any,
-    location: str,
-    max_segments: int = 3,
-) -> list:
-    """
-    Build a list of market sizing prompts for the top N segments.
-
-    Args:
-        segments:     Full list of segment dicts.
-        jtbd:         Job-To-Be-Done context.
-        idea:         The product idea.
-        location:     Target market location string.
-        max_segments: How many segments to build prompts for (default 3).
-
-    Returns:
-        List of fully formatted prompt strings.
-    """
-    return [
-        build_market_sizing_prompt(seg, jtbd, idea, location)
-        for seg in segments[:max_segments]
-    ]
-
 
 # ============================================================================
 # VERIFICATION PROMPT BUILDERS
@@ -147,9 +121,7 @@ def build_market_sizing_prompts_batch(
 _SD_VERIFICATION_BASE = prompts.STRUGGLE_DYNAMICS_VERIFICATION_PROMPT.format(
     current_date=datetime.now().strftime("%B %d, %Y")
 )
-_MARKET_VERIFICATION_BASE = prompts.MARKET_VERIFICATION_SYSTEM_PROMPT.format(
-    current_date=datetime.now().strftime("%B %d, %Y")
-)
+_MARKET_VERIFICATION_TEMPLATE = prompts.MARKET_VERIFICATION_SYSTEM_PROMPT
 
 # Fields verified in each SD segment
 SD_BASE_FIELDS = [
@@ -225,95 +197,92 @@ def build_market_verification_prompt(
     """
     Assemble the verification prompt for one market sizing dict.
 
-    Args:
-        market_sizing: A market sizing dict (EnhancedMarketSizing schema).
-        jtbd:          Optional Job-To-Be-Done context dict.
-        idea:          Optional business idea context dict.
-
-    Returns:
-        A fully formatted prompt string ready to be sent to the LLM.
+    Three data sections are injected into the template:
+      {segment_info}      — segment name + location
+      {business_context}  — problem, target user, JTBD
+      {claims_to_verify}  — population data + pricing data
     """
     segment_name = market_sizing.get("segment_name", "Unknown")
     location = market_sizing.get("location", "Unknown")
     population_data = market_sizing.get("struggle_aware_population", {})
     pricing_scenarios = market_sizing.get("pricing_scenarios", [])
 
-    parts = [
-        _MARKET_VERIFICATION_BASE,
-        "",
-        "=" * 80,
-        "",
-        f"SEGMENT: {segment_name}",
-        f"LOCATION: {location}",
-        "",
-    ]
+    # ── 1. Segment info ──────────────────────────────────────────────────
+    segment_info = f"Segment: {segment_name}\nLocation: {location}"
 
-    if idea or jtbd:
-        parts.append("BUSINESS CONTEXT:")
-        if idea:
-            parts.append(f"Problem: {idea.get('problem', idea.get('confirmed_struggle', 'N/A'))}")
-            parts.append(f"Target User: {idea.get('target_user', idea.get('confirmed_user', 'N/A'))}")
-        if jtbd:
-            narrative = jtbd.get("narrative", "N/A")
-            if len(narrative) > 200:
-                narrative = narrative[:200] + "..."
-            parts.append(f"JTBD: {narrative}")
-        parts.append("")
+    # ── 2. Business context ───────────────────────────────────────────────
+    ctx_parts = []
+    if idea:
+        ctx_parts.append(f"Problem: {idea.get('problem', idea.get('confirmed_struggle', 'N/A'))}")
+        ctx_parts.append(f"Target User: {idea.get('target_user', idea.get('confirmed_user', 'N/A'))}")
+    if jtbd:
+        narrative = jtbd.get("narrative", "N/A")
+        if len(narrative) > 200:
+            narrative = narrative[:200] + "..."
+        ctx_parts.append(f"JTBD: {narrative}")
+    business_context = "\n".join(ctx_parts) if ctx_parts else "N/A"
 
-    parts.extend(["CLAIMS TO VERIFY:", "", "=== POPULATION DATA ===", ""])
-
+    # ── 3. Claims to verify ───────────────────────────────────────────────
+    claims = []
     claim_num = 1
+
+    # Population claims
     if population_data:
+        claims.append("=== POPULATION DATA ===")
+        claims.append("")
+
         total_pop = population_data.get("total_population")
         pop_source = population_data.get("population_source", "N/A")
         pop_source_urls = population_data.get("population_source_urls", [])
         if total_pop:
-            parts.append(f"{claim_num}. Total Population: {total_pop:,} in {location}")
-            parts.append(f"   Source: {pop_source}")
+            claims.append(f"{claim_num}. Total Population: {total_pop:,} in {location}")
+            claims.append(f"   Source: {pop_source}")
             if pop_source_urls:
-                parts.append(f"   Claimed Source URLs: {', '.join(pop_source_urls)}")
-            parts.append("")
+                claims.append(f"   Claimed Source URLs: {', '.join(pop_source_urls)}")
+            claims.append("")
             claim_num += 1
 
         prevalence = population_data.get("prevalence_rate")
         prev_source = population_data.get("prevalence_source", "N/A")
         prev_source_urls = population_data.get("prevalence_source_urls", [])
         if prevalence is not None:
-            parts.append(f"{claim_num}. Prevalence Rate: {prevalence * 100:.1f}% (people experiencing this struggle)")
-            parts.append(f"   Source: {prev_source}")
+            claims.append(f"{claim_num}. Prevalence Rate: {prevalence * 100:.1f}% (people experiencing this struggle)")
+            claims.append(f"   Source: {prev_source}")
             if prev_source_urls:
-                parts.append(f"   Claimed Source URLs: {', '.join(prev_source_urls)}")
-            parts.append("")
+                claims.append(f"   Claimed Source URLs: {', '.join(prev_source_urls)}")
+            claims.append("")
             claim_num += 1
 
         struggle_count = population_data.get("struggle_aware_count")
         calc_logic = population_data.get("calculation_logic", "N/A")
         if struggle_count:
-            parts.append(f"{claim_num}. Struggle-Aware Count: {struggle_count:,}")
-            parts.append(f"   Calculation: {calc_logic}")
-            parts.append("")
+            claims.append(f"{claim_num}. Struggle-Aware Count: {struggle_count:,}")
+            claims.append(f"   Calculation: {calc_logic}")
+            claims.append("")
             claim_num += 1
 
+    # Pricing claims
     if pricing_scenarios:
-        parts.extend(["=== PRICING DATA ===", ""])
+        claims.append("=== PRICING DATA ===")
+        claims.append("")
         for i, scenario in enumerate(pricing_scenarios, 1):
             tier = scenario.get("tier", "Unknown")
             annual_price = scenario.get("annual_price")
-            parts.append(f"SCENARIO {i}: {tier}")
+            claims.append(f"SCENARIO {i}: {tier}")
             if annual_price:
-                parts.append(f"   Annual Price: ${annual_price:,}")
+                claims.append(f"   Annual Price: ${annual_price:,}")
                 rationale = scenario.get("pricing_rationale", "")
                 if len(rationale) > 100:
                     rationale = rationale[:100] + "..."
-                parts.append(f"   Rationale: {rationale}")
+                claims.append(f"   Rationale: {rationale}")
 
             pricing_source_urls = scenario.get("pricing_source_urls", [])
             if pricing_source_urls:
-                parts.append(f"   Claimed Pricing Source URLs: {', '.join(pricing_source_urls)}")
+                claims.append(f"   Claimed Pricing Source URLs: {', '.join(pricing_source_urls)}")
 
             comparables = scenario.get("comparable_solutions", [])
             if comparables:
-                parts.append("   Comparable Solutions:")
+                claims.append("   Comparable Solutions:")
                 for comp in comparables:
                     line = (
                         f"     - {comp.get('solution_name', 'Unknown')}: "
@@ -323,7 +292,15 @@ def build_market_verification_prompt(
                     url = comp.get("source_url", "")
                     if url:
                         line += f" | URL: {url}"
-                    parts.append(line)
-            parts.append("")
+                    claims.append(line)
+            claims.append("")
 
-    return "\n".join(parts)
+    claims_to_verify = "\n".join(claims) if claims else "No claims provided."
+
+    # ── Format the template ───────────────────────────────────────────────
+    return _MARKET_VERIFICATION_TEMPLATE.format(
+        current_date=datetime.now().strftime("%B %d, %Y"),
+        segment_info=segment_info,
+        business_context=business_context,
+        claims_to_verify=claims_to_verify,
+    )

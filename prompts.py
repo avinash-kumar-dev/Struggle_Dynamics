@@ -378,6 +378,15 @@ Your task is to verify:
 2. Calculation accuracy (total × prevalence = struggle_aware_count)
 3. Pricing data and competitor prices
 
+SEGMENT UNDER REVIEW:
+{segment_info}
+
+BUSINESS CONTEXT:
+{business_context}
+
+CLAIMS TO VERIFY:
+{claims_to_verify}
+
 VERIFICATION PROCESS:
 1. Verify population data for the specific location
 2. Verify prevalence rates and struggle-awareness metrics
