@@ -91,7 +91,7 @@ def build_market_sizing_prompt(
     Assemble and return the fully formatted Market Sizing prompt for one segment.
 
     Args:
-        segment:   A segment dict containing at least 'segment_name' and 'description'.
+        segment:   Full segment dict (entire payload is injected as segment details).
         jtbd:      Job-To-Be-Done context (dict or string).
         idea:      The product idea (dict or string).
         location:  Target market location string.
@@ -101,12 +101,13 @@ def build_market_sizing_prompt(
     """
     jtbd_str = json.dumps(jtbd) if isinstance(jtbd, dict) else (jtbd or "")
     idea_str = json.dumps(idea) if isinstance(idea, dict) else (idea or "")
+    segment_details_str = json.dumps(segment, indent=2) if isinstance(segment, dict) else str(segment)
 
     return prompts.MARKET_SIZING_PROMPT.format(
         jtbd=jtbd_str,
         idea=idea_str,
         segment_name=segment.get("segment_name", ""),
-        segment_description=segment.get("description", ""),
+        segment_description=segment_details_str,
         location=location,
         current_date=datetime.now().strftime("%B %d, %Y"),
     )
